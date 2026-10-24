@@ -1,0 +1,511 @@
+// B2B Bozor — database schema (MySQL 8)
+// Mirrors the domain types in frontend/src/types/index.ts and docs/API.md.
+// Money: integer UZS. JSON columns hold value objects that are always read/written whole.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider          = "mysql"
+  url               = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
+}
+
+enum Role {
+  buyer
+  seller
+  courier
+  admin
+}
+
+enum UserStatus {
+  active
+  blocked
+}
+
+enum ProductStatus {
+  active
+  inactive
+  pending
+  rejected
+}
+
+enum OrderStatus {
+  pending
+  confirmed
+  ready
+  in_transit
+  delivered
+  cancelled
+}
+
+enum PaymentMethod {
+  card
+  cash
+  transfer
+}
+
+enum PaymentStatus {
+  unpaid
+  paid
+  refunded
+}
+
+enum DeliveryType {
+  courier
+  pickup
+}
+
+enum RfqStatus {
+  open
+  answered
+  accepted
+  rejected
+  closed
+}
+
+enum NotificationType {
+  order
+  rfq
+  message
+  system
+  review
+}
+
+enum PaymentProvider {
+  payme
+  click
+}
+
+enum PaymentTxStatus {
+  created
+  pending
+  paid
+  cancelled
+  failed
+}
+
+enum OtpPurpose {
+  password_reset
+  phone_verify
+}
+
+model User {
+  id                String     @id @default(cuid())
+  role              Role
+  fullName          String
+  email             String     @unique
+  phone             String
+  phoneVerified     Boolean    @default(false)
+  passwordHash      String
+  avatar            String?    @db.Text
+  status            UserStatus @default(active)
+  organization      String?
+  /// Address[]
+  addresses         Json
+  /// { email, sms, orders, marketing }
+  notificationPrefs Json
+  // courier profile
+  courierTransport  String?
+  courierRegion     String?
+  courierRating     Float?
+  courierDeliveries Int        @default(0)
+  /// CourierLocation | null
+  courierLocation   Json?
+  /// ScheduleDay[]
+  courierSchedule   Json?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  company         Company?
+  sessions        Session[]
+  ordersAsBuyer   Order[]          @relation("BuyerOrders")
+  ordersAsCourier Order[]          @relation("CourierOrders")
+  reviews         Review[]
+  rfqs            Rfq[]
+  notifications   Notification[]
+  favorites       Favorite[]
+  participants    ConversationParticipant[]
+  messages        Message[]
+  aiChats         AiChat[]
+  otps            OtpCode[]
+  uploads         Upload[]
+  payments        Payment[]
+
+  @@index([role])
+}
+
+model Session {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userAgent  String?  @db.VarChar(255)
+  ip         String?  @db.VarChar(64)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  lastUsedAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model OtpCode {
+  id        String     @id @default(cuid())
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose   OtpPurpose
+  codeHash  String
+  attempts  Int        @default(0)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime   @default(now())
+
+  @@index([userId, purpose])
+}
+
+model Company {
+  id                String   @id @default(cuid())
+  ownerId           String   @unique
+  owner             User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  name              String
+  slug              String   @unique
+  tin               String   @unique
+  logo              String?  @db.Text
+  description       String   @db.Text
+  region            String
+  address           String
+  phone             String
+  email             String
+  website           String?
+  foundedYear       Int
+  employees         String
+  verified          Boolean  @default(false)
+  rating            Float    @default(0)
+  reviewsCount      Int      @default(0)
+  productsCount     Int      @default(0)
+  ordersCount       Int      @default(0)
+  responseRate      Int      @default(100)
+  responseTimeHours Int      @default(2)
+  /// string[] (category slugs)
+  mainCategories    Json
+  /// Address — warehouse / pickup point
+  pickupPoint       Json
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  products Product[]
+  orders   Order[]
+  rfqs     Rfq[]
+
+  @@index([region])
+  @@index([verified])
+}
+
+model Category {
+  id        String  @id @default(cuid())
+  slug      String  @unique
+  nameUz    String
+  nameRu    String
+  nameEn    String
+  color     String
+  sortOrder Int     @default(0)
+
+  products Product[]
+}
+
+model Product {
+  id           String        @id @default(cuid())
+  companyId    String
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  categorySlug String
+  category     Category      @relation(fields: [categorySlug], references: [slug])
+  name         String
+  description  String        @db.Text
+  /// string[] (URLs)
+  images       Json
+  price        Int
+  unit         String
+  moq          Int
+  stock        Int
+  discount     Float         @default(0)
+  /// PriceTier[]
+  tiers        Json
+  /// ProductSpec[]
+  specs        Json
+  /// string[]
+  tags         Json
+  /// normalised name + tags + description + company name, for LIKE search
+  searchText   String        @db.Text
+  /// unitPriceFor(moq) — the catalog price used for price filters and sorting
+  moqPrice     Int
+  /// soldCount * 3 + views / 10 — "popular" sort key
+  popularity   Float         @default(0)
+  rating       Float         @default(0)
+  reviewsCount Int           @default(0)
+  soldCount    Int           @default(0)
+  views        Int           @default(0)
+  deliveryDays Int           @default(2)
+  status       ProductStatus @default(active)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  reviews   Review[]
+  favorites Favorite[]
+
+  @@index([status, categorySlug])
+  @@index([status, popularity])
+  @@index([status, moqPrice])
+  @@index([companyId])
+}
+
+model Review {
+  id        String   @id @default(cuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userName  String
+  rating    Int
+  comment   String   @db.Text
+  createdAt DateTime @default(now())
+
+  @@unique([productId, userId])
+  @@index([productId])
+}
+
+model Favorite {
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@id([userId, productId])
+}
+
+model Order {
+  id                String        @id @default(cuid())
+  number            String        @unique
+  buyerId           String
+  buyer             User          @relation("BuyerOrders", fields: [buyerId], references: [id])
+  buyerName         String
+  buyerPhone        String
+  buyerOrganization String?
+  companyId         String
+  company           Company       @relation(fields: [companyId], references: [id])
+  companyName       String
+  subtotal          Int
+  deliveryFee       Int
+  total             Int
+  status            OrderStatus   @default(pending)
+  paymentMethod     PaymentMethod
+  paymentStatus     PaymentStatus @default(unpaid)
+  deliveryType      DeliveryType
+  /// Address | null
+  deliveryAddress   Json?
+  /// Address
+  pickupPoint       Json
+  distanceKm        Float?
+  durationMin       Int?
+  routeSource       String?
+  /// RouteGeometry cache (pickup → destination)
+  routeGeometry     Json?
+  courierId         String?
+  courier           User?         @relation("CourierOrders", fields: [courierId], references: [id])
+  courierName       String?
+  courierPhone      String?
+  courierFee        Int?
+  /// CourierLocation | null
+  courierLocation   Json?
+  note              String?       @db.Text
+  cancelReason      String?
+  rated             Boolean       @default(false)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  items  OrderItem[]
+  events OrderEvent[]
+
+  @@index([buyerId, createdAt])
+  @@index([companyId, createdAt])
+  @@index([courierId, status])
+  @@index([status, deliveryType])
+}
+
+model OrderItem {
+  id           String @id @default(cuid())
+  orderId      String
+  order        Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId    String
+  name         String
+  image        String? @db.Text
+  categorySlug String
+  unit         String
+  unitPrice    Int
+  quantity     Int
+  total        Int
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+model OrderEvent {
+  id      String      @id @default(cuid())
+  orderId String
+  order   Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  status  OrderStatus
+  at      DateTime    @default(now())
+  by      String?
+  note    String?
+
+  @@index([orderId, at])
+}
+
+/// One payment attempt for one or more orders (a checkout is split per seller but paid once).
+model Payment {
+  id          String          @id @default(cuid())
+  /// numeric id for Click (merchant_prepare_id / merchant_confirm_id must be integers)
+  seq         Int             @unique @default(autoincrement())
+  userId      String
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider    PaymentProvider
+  /// string[] — order ids covered by this payment
+  orderIds    Json
+  /// UZS (Payme works in tiyin = amount * 100)
+  amount      Int
+  status      PaymentTxStatus @default(created)
+  /// Provider transaction id (Payme `id`, Click `click_trans_id`)
+  externalId  String?
+  /// Payme state: 1 created, 2 performed, -1 cancelled, -2 cancelled after perform
+  state       Int             @default(0)
+  reason      Int?
+  createTime  BigInt?
+  performTime BigInt?
+  cancelTime  BigInt?
+  /// raw provider payloads for audit
+  meta        Json?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@unique([provider, externalId])
+  @@index([userId])
+}
+
+model Rfq {
+  id                String    @id @default(cuid())
+  number            String    @unique
+  buyerId           String
+  buyer             User      @relation(fields: [buyerId], references: [id])
+  buyerName         String
+  buyerOrganization String?
+  companyId         String
+  company           Company   @relation(fields: [companyId], references: [id])
+  companyName       String
+  productId         String?
+  productName       String
+  quantity          Int
+  unit              String
+  targetPrice       Int?
+  deadline          DateTime?
+  message           String    @db.Text
+  status            RfqStatus @default(open)
+  responsePrice     Int?
+  responseMessage   String?   @db.Text
+  responseValidTo   DateTime?
+  respondedAt       DateTime?
+  createdAt         DateTime  @default(now())
+
+  @@index([buyerId])
+  @@index([companyId, status])
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  title     String
+  body      String           @db.Text
+  link      String?
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model Conversation {
+  id          String   @id @default(cuid())
+  productId   String?
+  productName String?
+  updatedAt   DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  participants ConversationParticipant[]
+  messages     Message[]
+}
+
+model ConversationParticipant {
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  unread         Int          @default(0)
+
+  @@id([conversationId, userId])
+  @@index([userId])
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderId       String
+  sender         User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  text           String       @db.Text
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+model AiChat {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  /// AiMessage[]
+  messages  Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, updatedAt])
+}
+
+model ContactMessage {
+  id        String   @id @default(cuid())
+  name      String
+  email     String
+  subject   String
+  message   String   @db.Text
+  createdAt DateTime @default(now())
+}
+
+model NewsletterSubscriber {
+  email     String   @id
+  createdAt DateTime @default(now())
+}
+
+model Upload {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  path      String
+  mime      String
+  size      Int
+  createdAt DateTime @default(now())
+}
+
+/// Sequential human-readable numbers (B2B-1001, RFQ-301)
+model Counter {
+  name  String @id
+  value Int
+}
